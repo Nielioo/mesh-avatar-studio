@@ -1,10 +1,11 @@
 """Turns frames from render_loops.mjs into looping transparent GIFs.
 
-uv run --with pillow _my_scripts/make_gif.py projects/<name> [height] [clip ...]
+uv run --with pillow _my_scripts/make_gif.py projects/<name> [height | WxH] [clip ...]
 
 Crops every clip to the same box (the union of all frames, so the avatar does not jump when
-an overlay swaps the idle GIF for the talking one), scales to `height` px (default 400) and
-writes projects/<name>/gif/<clip>_<height>.gif (not git-ignored) with ffmpeg's palette generation.
+an overlay swaps the idle GIF for the talking one), scales to `height` px, or fits
+it into a WxH canvas (default 512x512, centred, standing on the bottom edge), and writes
+projects/<name>/gif/<clip>_<size>.gif (not git-ignored) with ffmpeg's palette generation.
 """
 import json
 import shutil
@@ -15,7 +16,8 @@ from pathlib import Path
 from PIL import Image
 
 project = Path(sys.argv[1])
-height = int(sys.argv[2]) if len(sys.argv) > 2 else 400
+size_arg = sys.argv[2] if len(sys.argv) > 2 else "512x512"
+canvas = tuple(int(v) for v in size_arg.split("x")) if "x" in size_arg else None
 gif_dir = project / "work" / "gif"
 clips = sys.argv[3:] or ["idle", "talk"]
 
@@ -28,17 +30,29 @@ for files in frames.values():
 size = Image.open(frames[clips[0]][0]).size
 pad = 6
 box = (max(0, box[0] - pad), max(0, box[1] - pad), min(size[0], box[2] + pad), min(size[1], box[3]))
-width = round((box[2] - box[0]) * height / (box[3] - box[1]))
+bw, bh = box[2] - box[0], box[3] - box[1]
+if canvas:
+    k = min(canvas[0] / bw, canvas[1] / bh)
+    width, height = round(bw * k), round(bh * k)
+else:
+    height = int(size_arg)
+    width = round(bw * height / bh)
+out_size = canvas or (width, height)
 
 for clip, files in frames.items():
-    scaled = gif_dir / f"{clip}_{height}"
+    scaled = gif_dir / f"{clip}_{size_arg}"
     shutil.rmtree(scaled, ignore_errors=True)
     scaled.mkdir()
     for i, f in enumerate(files):
         # Pillow resizes RGBA with premultiplied alpha: no dark fringe from transparent pixels
-        Image.open(f).crop(box).resize((width, height), Image.LANCZOS).save(scaled / f"{i:04d}.png")
+        frame = Image.open(f).crop(box).resize((width, height), Image.LANCZOS)
+        if canvas:
+            square = Image.new("RGBA", canvas, (0, 0, 0, 0))
+            square.paste(frame, ((canvas[0] - width) // 2, canvas[1] - height))
+            frame = square
+        frame.save(scaled / f"{i:04d}.png")
     fps = json.loads((gif_dir / clip / "clip.json").read_text())["fps"]
-    out = project / "gif" / f"{clip}_{height}.gif"
+    out = project / "gif" / f"{clip}_{size_arg}.gif"
     out.parent.mkdir(exist_ok=True)
     subprocess.run([
         "ffmpeg", "-v", "error", "-y", "-framerate", str(fps), "-i", str(scaled / "%04d.png"),
@@ -47,4 +61,4 @@ for clip, files in frames.items():
         "[b][p]paletteuse=dither=none:alpha_threshold=128:diff_mode=rectangle",
         "-loop", "0", str(out),
     ], check=True)
-    print(json.dumps({"gif": str(out), "frames": len(files), "size": [width, height], "kB": out.stat().st_size // 1024}))
+    print(json.dumps({"gif": str(out), "frames": len(files), "size": list(out_size), "kB": out.stat().st_size // 1024}))

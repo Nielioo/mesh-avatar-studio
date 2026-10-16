@@ -109,37 +109,25 @@ async function renderClip({ rig, assets, name, clip, width, height }) {
     return open;
   };
 
-  // Talking: phrases of a few unhurried syllables (about 3 per second) with random lengths and
-  // pauses. Only the a (half or full open) and o mouths: the wide i read as a grimace.
-  const syllables = [], pauses = [];
+  // Talking: a constant anime lip flap read from a frame sheet, one character per frame at 15
+  // fps. The sheet was generated at random and kept because no 6-frame stretch repeats, the
+  // same shape never opens twice in a row and the a and o shapes are balanced; no i or u.
+  // _ closed, h half-open a, a medium a, A full a, o small o, O big o
+  const SHEET = '_AA_oohhOOhAAhooohhaaahhAA__OO_aahOOOaaaoo_AAA_oo__OOhAAOOOhAAAhhOO_AAaaahOOooohAAAhOOOhAh';
+  const SHAPES = { _: [0, 0], h: [0.5, 0], a: [0.72, 0], A: [0.95, 0], o: [0.65, 0.5], O: [0.9, 0.55] };
+  // each run of o gets its own roundness (mouthForm 0.4..0.7, all inside the o drawing)
+  const roundness = [];
   if (name === 'talk') {
-    let seed = 11;
+    let seed = 5;
     const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-    let t = 0.2;
-    while (t < T - 0.9) {
-      const count = 2 + Math.floor(rnd() * 4);
-      for (let k = 0; k < count && t < T - 0.6; k++) {
-        const dur = 0.22 + rnd() * 0.18;
-        const round = rnd() < 0.35;
-        syllables.push({ t0: t, t1: t + dur, form: round ? 0.55 : 0, peak: round ? 0.75 : 0.45 + rnd() * 0.5 });
-        t += dur + rnd() * 0.12;
-      }
-      const pause = 0.35 + rnd() * 0.45;
-      pauses.push(t + pause / 2);
-      t += pause;
-    }
+    for (let i = 0; i < SHEET.length; i++) roundness.push(i && SHEET[i] === SHEET[i - 1] ? roundness[i - 1] : 0.4 + rnd() * 0.3);
   }
+  // the shape of frame f is set half a frame before f is captured
   const mouth = t => {
-    for (const s of syllables) {
-      if (t >= s.t0 && t < s.t1) {
-        const u = (t - s.t0) / (s.t1 - s.t0);
-        return { open: s.peak * Math.sin(Math.PI * u) ** 0.8, form: s.form };
-      }
-    }
-    return { open: 0, form: 0 };
+    const f = Math.floor(t * clip.fps + 0.5) % SHEET.length;
+    const [open, form] = SHAPES[SHEET[f]];
+    return { open, form: SHEET[f] === 'o' || SHEET[f] === 'O' ? roundness[f] : form };
   };
-  // blink in the middle of a pause in the second half of the loop
-  const talkBlink = pauses.find(p => p > T / 2 && p < T - 0.4) ?? T * 0.6;
 
   // All channels are zero at t = 0, so both loops start from the same rest pose.
   const pose = t => {
@@ -152,11 +140,11 @@ async function renderClip({ rig, assets, name, clip, width, height }) {
         eyeLOpen: eye, eyeROpen: eye, gazeX: 0.3 * s1(t), gazeY: 0.15 * s2(t),
       };
     }
-    const eye = blink(t, [talkBlink]);
+    const eye = blink(t, [3.0]);
     const m = mouth(t);
     // the head lifts a little with each open mouth
     return {
-      angleX: 4 * s1(t) + s3(t), angleY: 1.5 * s2(t) + 0.8 * s3(t) + 1.2 * m.open, angleZ: -2 * s1(t) + 0.8 * s2(t),
+      angleX: 4 * s1(t) + s3(t), angleY: 1.5 * s2(t) + 0.8 * s3(t) + 0.6 * m.open, angleZ: -2 * s1(t) + 0.8 * s2(t),
       bodyAngleX: 2 * s1(t), bodyAngleZ: 1.5 * s1(t),
       breath: 0.5 - 0.5 * Math.cos(w * t),
       eyeLOpen: eye, eyeROpen: eye, gazeX: 0.2 * s1(t), gazeY: 0.1 * s2(t),
